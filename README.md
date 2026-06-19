@@ -1,80 +1,64 @@
 # okf-claude
 
-> **Status: v0.1, testing-grade, public.** A thin kit that makes the memory you *already* have —
-> git history, a Claude `memory/` bundle, and your skills — readable and writable as a single,
-> portable [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf)
-> (OKF) bundle, plus the skills that teach an agent how to **search** and **consolidate** that memory.
+**A four-layer knowledge architecture for coding agents** — give an agent the *right* knowledge at the *right* altitude (code structure · change history · durable meaning · the loop that maintains them), using formats you mostly already have, unified behind the [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf) (OKF).
 
-## Why this exists
+> **Status: v0.1 — actively dogfooded** on a real, actively-developed skill-system codebase to measure whether it earns its keep. This README and [`DESIGN.md`](DESIGN.md) stay honest about what's *proven* vs. *promising*.
 
-Most agent "memory systems" reinvent a store. You don't need one. If you already run:
+## The idea in one breath
 
-- **git** as the episodic log (what changed, when, why, what you rejected),
-- a **`memory/` + `MEMORY.md`** bundle as durable facts (one fact per file, with frontmatter), and
-- **skills** as procedural memory,
+Agents rarely fail for lack of a database. They fail from **context rot** — drowning in the *wrong* context. (Measured: model accuracy falls from ~90% to ~51% as a conversation grows; many models drop below 50% past ~32K tokens.) The fix is not a bigger store. It is **four thin layers, each the single source of truth for one kind of knowledge, each *linking* to the others instead of *copying* them:**
 
-then you are already running the pattern OKF standardizes — markdown files + YAML frontmatter + an
-index + a change log. OKF just pins down the small set of conventions that make it portable and
-agent-queryable. **Adopting it is mostly a frontmatter rename + two generators.** This kit is those
-generators and the skills that operate the result.
+| Layer | Answers the question | Lives in | Derivable? | Freshness |
+|---|---|---|---|---|
+| **① Structural** (codegraph) | *what calls what · blast radius · where defined* | local SQLite, built from the AST | yes — mechanical | auto-synced |
+| **② Episodic** (git) | *what changed · when · why · what we rejected* | commit messages + trailers | it **is** the source of truth | append-only |
+| **③ Semantic** (OKF concepts) | *why · the invariant · who owns this · the lesson* | markdown + YAML frontmatter | **no** — must be curated | slow-changing |
+| **④ Procedural** (Hermes skills) | *the loop that keeps the other three true* | `SKILL.md` | authored | human-gated |
 
-It also rides OKF for *optionality*: if the format gets non-Google adoption, your stack already
-speaks it; if it doesn't, you've lost nothing — it's still just markdown in git.
+Layers ① and ② you largely **already have**. Layer ③ is the one the others *structurally cannot produce*. Layer ④ is why it doesn't rot.
 
-## What's in the box
+The payoff: **the highest-level understanding of a system for the lowest reading effort** — open one `index.md` and a few concept docs instead of grepping tens of thousands of lines.
+
+→ The full philosophy, the role of each layer, why git-as-memory and codegraph are genuinely innovative, the design guidelines from the research, and the diagrams live in **[`DESIGN.md`](DESIGN.md)**.
+
+## What's in the box (the tooling)
 
 ```
-bin/okf-log        # generate log.md   <- FROM git history (section 7). Git is the source of truth.
-bin/okf-index      # generate index.md <- FROM scanning a dir (section 6, progressive disclosure).
-bin/okf-validate   # check a bundle for OKF v0.1 conformance (section 9).
-skills/
-  memory-search/      SKILL.md   # the read path: index-first, JIT, git recipes, freshness.
-  memory-consolidate/ SKILL.md   # the out-of-band "dreaming" pass: merge, age-out, cap, human-gate.
-viz/               # (vendored) Google's single-file OKF graph visualizer.
-examples/sample-bundle/   # a tiny conformant bundle to test against.
+bin/okf-validate   # OKF v0.1 conformance check (spec §9)
+bin/okf-index      # generate index.md  (progressive disclosure, §6) — from a directory
+bin/okf-log        # generate log.md    (§7) — rendered FROM git history, e.g. --grep '^skillsys'
+bin/okf-graph      # zero-dependency, fully-offline force-graph visualizer (no CDN, no deps)
+viz/               # Google's reference OKF visualizer, vendored verbatim (Apache-2.0; see PROVENANCE)
+skills/            # memory-search + memory-consolidate — the read & consolidation discipline as agent skills
+examples/          # a small conformant bundle to test against
 ```
 
-All scripts are **Python 3 stdlib only** — no pip installs, no server, no API keys.
+All generators are **Python 3 stdlib only** — no pip installs, no server, no API keys, nothing leaves your machine.
 
-## Quick start
+## Quickstart
 
 ```sh
-# Validate the sample bundle
+# validate a bundle
 bin/okf-validate examples/sample-bundle
 
-# Regenerate the index for a memory directory (bundle root gets okf_version)
-bin/okf-index examples/sample-bundle/facts
+# (re)build the index for a knowledge directory
+bin/okf-index examples/sample-bundle --recursive --okf-version 0.1
 
-# Render git history as an OKF log.md (run inside any git repo)
-bin/okf-log -o /tmp/log.md
+# render git history as an OKF change log (run inside any git repo)
+bin/okf-log --grep '^skillsys' -o /tmp/log.md      # scope to a commit convention if you use one
+
+# see it as a graph (offline, zero-dep)
+bin/okf-graph examples/sample-bundle -o /tmp/graph.html && open /tmp/graph.html
 ```
 
-To OKF-ify a real Claude `memory/` bundle: rename `metadata.type` -> top-level `type`, run
-`okf-index` to (re)build `index.md`, run `okf-log` to emit `log.md` from git, then `okf-validate`.
+To OKF-ify an existing markdown knowledge base: add a top-level `type:` to each file's frontmatter, run `okf-index` to build `index.md`, run `okf-log` to emit `log.md` from git, then `okf-validate`.
 
-## Design principles (learned from codegraph and other reputed repos)
+## What it is — and isn't (honest framing)
 
-We did not fork [codegraph](https://github.com/colbymchenry/codegraph) — we copied its *engineering
-discipline*. codegraph wins on code-structure memory by being lean, local, single-source-of-truth,
-and progressive-disclosure; those lessons transfer directly to *knowledge* memory:
-
-| Lesson (codegraph et al.) | How okf-claude applies it |
-|---|---|
-| Expose the fewest high-leverage entry points (4 tools; one answers most in a single call). | `memory-search` is **one read path**, not a tool menu. |
-| One tuned file is the single source of truth for agent behavior. | Each `SKILL.md` is the sole source of truth for its operation. |
-| Local, zero-config, no server, no API keys; data is just committable files. | Bundle = markdown + git; scripts are **stdlib-only**. |
-| Return the relevant slice + relationships, never the whole repo. | **Index-first + JIT**; "don't load the whole tree" is in the search bar. |
-| Auto-sync + explicit staleness signals. | `log.md` / `index.md` are **generated, never hand-edited**; freshness-check + age-out. |
-| Blast radius before changing a node. | Consolidate checks inbound links before retiring a concept. |
-| Tune the surface against an observable metric. | Each skill carries an **observable bar + self-check**. |
-
-## OKF conformance (v0.1, section 9)
-
-A bundle is conformant when: every non-reserved `.md` has parseable YAML frontmatter; every
-frontmatter block has a non-empty `type`; and reserved files (`index.md`, `log.md`) follow their
-structure. Consumers must tolerate missing optional fields, unknown types/keys, broken links, and
-missing `index.md`. `bin/okf-validate` enforces exactly this.
+- **It is** a thin **format + tooling + discipline** layer over things you already keep (git, markdown files, skills), plus an *optional* deterministic code index. The value is **unification, portability, and the curation discipline** — not a new engine.
+- **It isn't** a database, a vector store, an embedding pipeline, or a platform. OKF itself is young (v0.1) and is, by design, "just markdown + frontmatter" — it standardizes *structural* interoperability, not semantic meaning. We adopt it for portability and optionality, not because a format is magic.
+- Each layer has places it **doesn't** help (codegraph adds nothing to prose knowledge; OKF adds no modeling power a catalog doesn't already have). `DESIGN.md` is explicit about those edges.
 
 ## License
 
-MIT (intended). Not affiliated with Google; OKF is an open spec published by Google Cloud.
+MIT for this kit (see [`LICENSE`](LICENSE)). The vendored visualizer under [`viz/`](viz/) is **Google's** OKF reference implementation, **Apache-2.0** — see [`viz/LICENSE.md`](viz/LICENSE.md) and [`viz/PROVENANCE.md`](viz/PROVENANCE.md). Not affiliated with Google; OKF is an open spec published by Google Cloud.

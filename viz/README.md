@@ -47,7 +47,7 @@ To run the *upstream* CLI instead, clone
   needs network access to render. (Upstream design.)
 - **Edge detection expects *relative* links.** Google's link extractor skips
   any markdown link target that is absolute (starts with `/`) or external.
-  A bundle that writes intra-bundle links as `/.agents/okf/foo.md` will
+  A bundle that writes intra-bundle links as `/okf/foo.md` will
   render all its nodes but **zero edges**; only relative links like
   `subsystems/foo.md` produce edges. `index.md` is excluded from the graph,
   so relative links living only there do not count.
