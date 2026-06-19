@@ -24,9 +24,11 @@ TYPE_WORD = {
 US, RS = "\x1f", "\x1e"  # unit / record separators
 
 
-def git_log(path, max_count):
+def git_log(path, max_count, grep):
     fmt = US.join(["%ad", "%s", "%b"]) + RS
     cmd = ["git", "log", "--date=short", f"--pretty=format:{fmt}"]
+    if grep:
+        cmd.append(f"--grep={grep}")
     if max_count:
         cmd.append(f"-n{max_count}")
     if path:
@@ -65,13 +67,14 @@ def lesson_of(body):
 def main():
     ap = argparse.ArgumentParser(description="Generate OKF log.md from git history (section 7).")
     ap.add_argument("--path", default=None, help="scope to a path within the repo")
+    ap.add_argument("--grep", default=None, help="only commits whose message matches this regex (e.g. '^skillsys')")
     ap.add_argument("-n", "--max", type=int, default=0, help="max commits (0 = all)")
     ap.add_argument("--title", default="Directory Update Log", help="H1 title")
     ap.add_argument("-o", "--out", default="log.md", help="output path")
     args = ap.parse_args()
 
     by_date = collections.OrderedDict()  # git log is newest-first; preserve it
-    for date, subject, body in git_log(args.path, args.max):
+    for date, subject, body in git_log(args.path, args.max, args.grep):
         word, text = classify(subject)
         lesson = lesson_of(body)
         entry = f"* **{word}**: {text}"
