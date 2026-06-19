@@ -13,7 +13,7 @@ Agents rarely fail for lack of a database. They fail from **context rot** — dr
 | **① Structural** (codegraph) | *what calls what · blast radius · where defined* | local SQLite, built from the AST | yes — mechanical | auto-synced |
 | **② Episodic** (git) | *what changed · when · why · what we rejected* | commit messages + trailers | it **is** the source of truth | append-only |
 | **③ Semantic** (OKF concepts) | *why · the invariant · who owns this · the lesson* | markdown + YAML frontmatter | **no** — must be curated | slow-changing |
-| **④ Procedural** (Hermes skills) | *the loop that keeps the other three true* | `SKILL.md` | authored | human-gated |
+| **④ Procedural** ([Hermes skills](https://github.com/blueif16/hermes-skill-system)) | *the loop that keeps the other three true* | `SKILL.md` | authored | human-gated |
 
 Layers ① and ② you largely **already have**. Layer ③ is the one the others *structurally cannot produce*. Layer ④ is why it doesn't rot.
 
