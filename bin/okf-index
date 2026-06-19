@@ -1,0 +1,82 @@
+#!/usr/bin/env python3
+"""okf-index - generate an OKF index.md for a directory (progressive disclosure, section 6).
+
+Scans the concept files (non-reserved .md) in a directory, reads each one's
+`title` / `description` / `type` frontmatter, and writes an index.md grouping
+concepts by `type`. Entries follow OKF section 6: `* [Title](relative-url) - description`.
+
+This is the OKF-native regenerator for a MEMORY.md-style index: the index is a
+DERIVED view, re-run anytime, never hand-authored. Stdlib only.
+"""
+import os
+import re
+import argparse
+
+FM_DELIM = "---"
+RESERVED = {"index.md", "log.md"}
+
+
+def frontmatter(text):
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != FM_DELIM:
+        return {}
+    fm = {}
+    for ln in lines[1:]:
+        if ln.strip() == FM_DELIM:
+            break
+        m = re.match(r"^([A-Za-z0-9_-]+):\s?(.*)$", ln)
+        if m:
+            fm[m.group(1)] = m.group(2).strip()
+    return fm
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Generate OKF index.md for a directory (section 6).")
+    ap.add_argument("dir", nargs="?", default=".", help="directory to index")
+    ap.add_argument("--title", default=None, help="H1 title (default: directory name)")
+    ap.add_argument("--okf-version", default=None, help="emit root frontmatter okf_version (bundle root only)")
+    ap.add_argument("--recursive", action="store_true", help="include concepts in subdirectories")
+    ap.add_argument("-o", "--out", default=None, help="output path (default: <dir>/index.md)")
+    args = ap.parse_args()
+
+    d = os.path.abspath(args.dir)
+    out = os.path.abspath(args.out) if args.out else os.path.join(d, "index.md")
+    # OKF index files live at the root of what they index, so links are
+    # authored relative to the indexed dir `d` (not the output path).
+
+    walker = os.walk(d) if args.recursive else [(d, [], os.listdir(d))]
+    groups = {}
+    for dirpath, _, files in walker:
+        if ".git" in dirpath.split(os.sep):
+            continue
+        for f in sorted(files):
+            if not f.endswith(".md") or f in RESERVED:
+                continue
+            p = os.path.join(dirpath, f)
+            if os.path.abspath(p) == out:
+                continue
+            fm = frontmatter(open(p, encoding="utf-8").read())
+            typ = fm.get("type", "Untyped")
+            title = fm.get("title") or os.path.splitext(f)[0]
+            desc = fm.get("description", "")
+            url = os.path.relpath(p, d).replace(os.sep, "/")
+            groups.setdefault(typ, []).append((title, url, desc))
+
+    lines = []
+    if args.okf_version:
+        lines += [FM_DELIM, f'okf_version: "{args.okf_version}"', FM_DELIM, ""]
+    lines.append(f"# {args.title or os.path.basename(d.rstrip(os.sep))}")
+    lines.append("")
+    for typ in sorted(groups):
+        lines.append(f"## {typ}")
+        for title, url, desc in groups[typ]:
+            lines.append(f"* [{title}]({url}) - {desc}" if desc else f"* [{title}]({url})")
+        lines.append("")
+
+    open(out, "w", encoding="utf-8").write("\n".join(lines).rstrip() + "\n")
+    total = sum(len(v) for v in groups.values())
+    print(f"wrote {out} ({total} concept(s), {len(groups)} type group(s))")
+
+
+if __name__ == "__main__":
+    main()

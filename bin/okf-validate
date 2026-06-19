@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+"""okf-validate - check an OKF v0.1 bundle for conformance (OKF spec section 9).
+
+Conformance (OKF v0.1 section 9):
+  1. Every non-reserved .md file has a parseable YAML frontmatter block.
+  2. Every frontmatter block has a non-empty `type` field.
+  3. Reserved files (index.md, log.md) follow section 6 / section 7 structure when present.
+
+Consumers MUST tolerate: missing optional fields, unknown types, unknown keys,
+broken cross-links, and missing index.md. Those are WARNINGS here, never failures.
+
+Stdlib only - no pip deps (OKF ethos: just files). The frontmatter reader is a
+minimal flat `key: value` parser, which is sufficient for OKF concept files; it is
+not a full YAML implementation and does not validate nested structures.
+"""
+import os
+import re
+import sys
+import argparse
+
+FM_DELIM = "---"
+RESERVED = {"index.md", "log.md"}
+ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def split_frontmatter(text):
+    """Return (frontmatter_dict_or_None, parse_ok, body)."""
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != FM_DELIM:
+        return None, False, text
+    for i in range(1, len(lines)):
+        if lines[i].strip() == FM_DELIM:
+            fm = {}
+            for ln in lines[1:i]:
+                if not ln.strip() or ln.lstrip().startswith("#"):
+                    continue
+                m = re.match(r"^([A-Za-z0-9_-]+):\s?(.*)$", ln)
+                if m:
+                    fm[m.group(1)] = m.group(2).strip()
+            return fm, True, "\n".join(lines[i + 1:])
+    return None, False, text  # unterminated frontmatter block
+
+
+def check_concept(rel, text, errors):
+    fm, ok, _ = split_frontmatter(text)
+    if not ok:
+        errors.append(f"{rel}: missing or unparseable YAML frontmatter (section 9.1)")
+        return
+    if not fm.get("type", "").strip():
+        errors.append(f"{rel}: frontmatter has no non-empty `type` (section 9.2)")
+
+
+def check_index(rel, text, errors, warnings, is_root):
+    fm, _, body = split_frontmatter(text)
+    if fm is not None:
+        if not is_root:
+            errors.append(f"{rel}: index.md must not carry frontmatter except at bundle root (section 6)")
+        else:
+            extra = [k for k in fm if k != "okf_version"]
+            if extra:
+                warnings.append(f"{rel}: root index.md frontmatter should only carry okf_version (found {extra})")
+    if not re.search(r"^\s*[*-]\s+\[.+\]\(.+\)", body, re.M):
+        warnings.append(f"{rel}: no '* [Title](url) - desc' entries (section 6, SHOULD)")
+
+
+def check_log(rel, text, errors, warnings):
+    found = False
+    for ln in text.splitlines():
+        m = re.match(r"^##\s+(.+)$", ln)
+        if m:
+            found = True
+            if not ISO_DATE.match(m.group(1).strip()):
+                errors.append(f"{rel}: date heading '## {m.group(1).strip()}' is not ISO 8601 YYYY-MM-DD (section 7)")
+    if not found:
+        warnings.append(f"{rel}: no '## YYYY-MM-DD' date headings (section 7)")
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Validate an OKF v0.1 bundle (section 9).")
+    ap.add_argument("bundle", nargs="?", default=".", help="bundle root directory")
+    ap.add_argument("--quiet", action="store_true", help="suppress warnings (errors only)")
+    args = ap.parse_args()
+
+    root = os.path.abspath(args.bundle)
+    errors, warnings, n = [], [], 0
+    for dirpath, _, files in os.walk(root):
+        if ".git" in dirpath.split(os.sep):
+            continue
+        for f in files:
+            if not f.endswith(".md"):
+                continue
+            rel = os.path.relpath(os.path.join(dirpath, f), root)
+            try:
+                text = open(os.path.join(dirpath, f), encoding="utf-8").read()
+            except Exception as e:  # noqa: BLE001
+                errors.append(f"{rel}: cannot read ({e})")
+                continue
+            n += 1
+            if f == "index.md":
+                check_index(rel, text, errors, warnings, is_root=(os.path.dirname(rel) == ""))
+            elif f == "log.md":
+                check_log(rel, text, errors, warnings)
+            else:
+                check_concept(rel, text, errors)
+
+    print(f"OKF v0.1 conformance - {root}")
+    print(f"  scanned {n} markdown file(s)")
+    if warnings and not args.quiet:
+        print(f"\n  {len(warnings)} warning(s) [tolerated, not failures]:")
+        for w in warnings:
+            print(f"    ! {w}")
+    if errors:
+        print(f"\n  {len(errors)} ERROR(s):")
+        for e in errors:
+            print(f"    x {e}")
+        print("\nNOT CONFORMANT")
+        sys.exit(1)
+    print("\nCONFORMANT")
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()
