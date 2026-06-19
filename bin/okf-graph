@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+"""okf-graph - render an OKF bundle as a single self-contained HTML graph.
+
+Walks an OKF bundle: every non-reserved .md is a node (id = path minus .md,
+colored by `type`, labelled by `title`); every intra-bundle markdown link
+(`/path.md` or a relative `../x.md`) becomes an edge. Emits ONE self-contained
+HTML file with the graph data inlined + a dependency-free canvas force layout -
+no backend, no CDN, data stays on the page (the OKF visualizer property).
+Stdlib only.
+"""
+import os
+import re
+import json
+import argparse
+
+FM_DELIM = "---"
+RESERVED = {"index.md", "log.md"}
+LINK_RE = re.compile(r"\]\(([^)]+?\.md)(?:#[^)]*)?\)")
+
+
+def frontmatter_and_body(text):
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != FM_DELIM:
+        return {}, text
+    fm = {}
+    for i in range(1, len(lines)):
+        if lines[i].strip() == FM_DELIM:
+            return fm, "\n".join(lines[i + 1:])
+        m = re.match(r"^([A-Za-z0-9_-]+):\s?(.*)$", lines[i])
+        if m:
+            fm[m.group(1)] = m.group(2).strip()
+    return fm, text
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Render an OKF bundle as one self-contained HTML graph.")
+    ap.add_argument("bundle", nargs="?", default=".", help="bundle root directory")
+    ap.add_argument("-o", "--out", default=None, help="output html (default: <bundle>/graph.html)")
+    ap.add_argument("--title", default=None, help="page title (default: bundle dir name)")
+    args = ap.parse_args()
+
+    root = os.path.abspath(args.bundle)
+    out = os.path.abspath(args.out) if args.out else os.path.join(root, "graph.html")
+    title = (args.title or os.path.basename(root.rstrip(os.sep)) + " (OKF)").replace("<", "").replace(">", "")
+
+    nodes, bodies = {}, {}
+    for dp, _, files in os.walk(root):
+        if ".git" in dp.split(os.sep):
+            continue
+        for f in files:
+            if not f.endswith(".md") or f in RESERVED:
+                continue
+            p = os.path.join(dp, f)
+            cid = os.path.relpath(p, root)[:-3].replace(os.sep, "/")
+            fm, body = frontmatter_and_body(open(p, encoding="utf-8").read())
+            nodes[cid] = {"id": cid, "type": fm.get("type", "untyped"),
+                          "title": fm.get("title") or os.path.basename(cid),
+                          "description": fm.get("description", "")}
+            bodies[cid] = body
+
+    links = []
+    for cid, body in bodies.items():
+        cdir = os.path.dirname(cid)
+        seen = set()
+        for m in LINK_RE.finditer(body):
+            raw = m.group(1).strip()
+            tgt = raw[1:] if raw.startswith("/") else os.path.normpath(os.path.join(cdir, raw)).replace(os.sep, "/")
+            if tgt.endswith(".md"):
+                tgt = tgt[:-3]
+            if tgt in nodes and tgt != cid and tgt not in seen:
+                seen.add(tgt)
+                links.append({"source": cid, "target": tgt})
+
+    data = json.dumps({"nodes": list(nodes.values()), "links": links}).replace("<", "\\u003c")
+    html = HTML.replace("__DATA__", data).replace("__TITLE__", title)
+    open(out, "w", encoding="utf-8").write(html)
+    print(f"wrote {out} ({len(nodes)} concepts, {len(links)} links)")
+
+
+HTML = r'''<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>__TITLE__</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font:13px/1.45 system-ui,-apple-system,Segoe UI,sans-serif;background:#0f1115;color:#e6e6e6}
+#wrap{display:flex;height:100vh}
+#c{flex:1;display:block;cursor:grab}
+#c:active{cursor:grabbing}
+#side{width:312px;flex:none;padding:16px;overflow:auto;border-left:1px solid #23262d;background:#15171c}
+h1{font-size:15px;margin:0 0 4px}
+.sub{color:#7b818c;margin:0 0 12px}
+.legend span{display:inline-flex;align-items:center;margin:3px 10px 3px 0;white-space:nowrap}
+.dot{width:10px;height:10px;border-radius:50%;display:inline-block;margin-right:6px}
+#info{margin-top:14px;padding-top:12px;border-top:1px solid #23262d;font-size:12px;color:#aeb3bb;min-height:72px}
+#info b{color:#fff;font-size:13px}
+.muted{color:#7b818c}
+kbd{background:#23262d;border-radius:4px;padding:1px 5px;font-size:11px}
+</style></head>
+<body><div id="wrap">
+<canvas id="c"></canvas>
+<div id="side">
+<h1>__TITLE__</h1>
+<div class="sub" id="stats"></div>
+<div class="legend" id="legend"></div>
+<div id="info" class="muted">Hover a node for its description &middot; drag to rearrange.</div>
+<div class="muted" style="margin-top:16px;font-size:11px">Self-contained &middot; no server &middot; data inlined. Regenerate with <kbd>okf-graph</kbd>.</div>
+</div></div>
+<script>
+const DATA=__DATA__;
+const nodes=DATA.nodes,rawlinks=DATA.links;
+const types=[...new Set(nodes.map(n=>n.type))].sort();
+const palette=['#6cb6ff','#f8c555','#7ee787','#ff9492','#d2a8ff','#ffab70','#56d4dd','#e3b341'];
+const colorOf=t=>palette[Math.max(0,types.indexOf(t))%palette.length];
+const byId=Object.fromEntries(nodes.map(n=>[n.id,n]));
+let hover=null,drag=null;
+const cv=document.getElementById('c'),ctx=cv.getContext('2d');
+const DPR=window.devicePixelRatio||1;
+let W,H;
+function resize(){W=cv.width=cv.clientWidth*DPR;H=cv.height=cv.clientHeight*DPR;}
+window.addEventListener('resize',resize);resize();
+nodes.forEach((n,i)=>{const a=i/Math.max(1,nodes.length)*6.283;n.x=W/2+Math.cos(a)*Math.min(W,H)*0.32;n.y=H/2+Math.sin(a)*Math.min(W,H)*0.32;n.vx=0;n.vy=0;});
+const edges=rawlinks.filter(l=>byId[l.source]&&byId[l.target]).map(l=>({s:byId[l.source],t:byId[l.target]}));
+function step(){
+ const rep=10000*DPR*DPR,spring=150*DPR;
+ for(const n of nodes){n.fx=0;n.fy=0;}
+ for(let i=0;i<nodes.length;i++)for(let j=i+1;j<nodes.length;j++){
+  const a=nodes[i],b=nodes[j];let dx=a.x-b.x,dy=a.y-b.y;let d2=dx*dx+dy*dy||1;let d=Math.sqrt(d2);let f=rep/d2;
+  a.fx+=f*dx/d;a.fy+=f*dy/d;b.fx-=f*dx/d;b.fy-=f*dy/d;}
+ for(const e of edges){let dx=e.t.x-e.s.x,dy=e.t.y-e.s.y;let d=Math.sqrt(dx*dx+dy*dy)||1;let f=(d-spring)*0.012;
+  e.s.fx+=f*dx/d;e.s.fy+=f*dy/d;e.t.fx-=f*dx/d;e.t.fy-=f*dy/d;}
+ for(const n of nodes){n.fx+=(W/2-n.x)*0.0025;n.fy+=(H/2-n.y)*0.0025;
+  if(n===drag)continue;n.vx=(n.vx+n.fx)*0.84;n.vy=(n.vy+n.fy)*0.84;n.x+=n.vx;n.y+=n.vy;}
+}
+function draw(){
+ ctx.clearRect(0,0,W,H);ctx.lineWidth=DPR;
+ for(const e of edges){const hot=hover&&(e.s===hover||e.t===hover);
+  ctx.strokeStyle=hot?'rgba(120,180,255,0.7)':'rgba(255,255,255,0.10)';
+  ctx.beginPath();ctx.moveTo(e.s.x,e.s.y);ctx.lineTo(e.t.x,e.t.y);ctx.stroke();}
+ ctx.font=(12*DPR)+'px system-ui';ctx.textBaseline='middle';
+ for(const n of nodes){const r=(n===hover?10:6.5)*DPR;
+  ctx.beginPath();ctx.arc(n.x,n.y,r,0,7);ctx.fillStyle=colorOf(n.type);ctx.fill();
+  if(n===hover){ctx.lineWidth=2*DPR;ctx.strokeStyle='#fff';ctx.stroke();ctx.lineWidth=DPR;}
+  ctx.fillStyle='#c9ced6';ctx.fillText(n.title||n.id,n.x+r+4*DPR,n.y);}
+}
+function pick(mx,my){let best=null,bd=20*DPR;for(const n of nodes){const d=Math.hypot(n.x-mx,n.y-my);if(d<bd){bd=d;best=n;}}return best;}
+function rel(e){const r=cv.getBoundingClientRect();return[(e.clientX-r.left)*DPR,(e.clientY-r.top)*DPR];}
+cv.addEventListener('mousemove',e=>{const p=rel(e);if(drag){drag.x=p[0];drag.y=p[1];drag.vx=drag.vy=0;}const h=pick(p[0],p[1]);if(h!==hover){hover=h;if(h)info(h);}});
+cv.addEventListener('mousedown',e=>{const p=rel(e);drag=pick(p[0],p[1]);});
+window.addEventListener('mouseup',()=>{drag=null;});
+function esc(s){return(s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+function info(n){const deg=edges.filter(e=>e.s===n||e.t===n).length;
+ document.getElementById('info').innerHTML='<b>'+esc(n.title||n.id)+'</b> <span class=muted>'+esc(n.type)+'</span><br>'+esc(n.description||'(no description)')+'<br><span class=muted>'+esc(n.id)+'.md &middot; '+deg+' link'+(deg===1?'':'s')+'</span>';}
+document.getElementById('legend').innerHTML=types.map(t=>'<span><i class=dot style="background:'+colorOf(t)+'"></i>'+esc(t)+'</span>').join('');
+document.getElementById('stats').textContent=nodes.length+' concepts &middot; '+edges.length+' links &middot; '+types.length+' types';
+(function loop(){step();draw();requestAnimationFrame(loop);})();
+</script></body></html>'''
+
+
+if __name__ == "__main__":
+    main()
