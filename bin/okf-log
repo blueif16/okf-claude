@@ -48,10 +48,17 @@ def classify(subject):
 
 
 def lesson_of(body):
-    for ln in body.splitlines():
+    lines = body.splitlines()
+    for i, ln in enumerate(lines):
         m = re.match(r"^(Lesson|learned):\s*(.+)$", ln.strip(), re.I)
         if m:
-            return m.group(2).strip()
+            val = [m.group(2).strip()]
+            for cont in lines[i + 1:]:  # fold continuation lines (until blank / next key)
+                s = cont.strip()
+                if not s or re.match(r"^[A-Za-z][\w-]*:\s", s):
+                    break
+                val.append(s)
+            return " ".join(val)
     return None
 
 
